@@ -4,10 +4,12 @@ import java.io.DataInputStream;
 import java.io.InputStreamReader;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.io.PrintWriter;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.lang.Runtime;
 
 
 public class Program {
@@ -36,24 +38,31 @@ public class Program {
             throw new Error("method does not contain code!");
 
         var insts = parse(code, cf);
-        for (var v : insts) {
-            if (v != null)
-                System.err.print(v.getClass().getName() + "\n");
-        }
-        var graph = stackify(insts);
-//         for () {
-
+//         for (var v : insts) {
+//             if (v != null)
+//                 System.err.print(v.getClass().getName() + "\n");
 //         }
+        var graph = stackify(insts);
+
+        try (var out = new PrintWriter("/tmp/graph.dot")) {
+            out.print("digraph {{\n  compound=true\n  node [shape=rect]\n");
+            graph.print(out);
+            out.print("}}\n");
+        }
+        Runtime r = Runtime.getRuntime();
+        r.exec("dot -Tpdf /tmp/graph.dot -o ./graph.pdf");
     }
 
     static MethodGraph stackify(Instruction[] insts) {
         var blocks = new BasicBlock[insts.length];
         var current_block = new BasicBlock();
         blocks[0] = current_block;
+
         var incoming_branches = new int[insts.length];
         incoming_branches[0] = 1;
 
-        var block_begins = new ArrayList<Integer>();
+        var block_list = new ArrayList<BasicBlock>();
+        block_list.add(current_block);
 
         for (int i = 0; i < insts.length; i++) {
             var inst = insts[i];
@@ -65,28 +74,32 @@ public class Program {
                     int dest = i + g.offset;
                     if (blocks[dest] == null) {
                         blocks[dest] = new BasicBlock();
-                        block_begins.add(dest);
+                        block_list.add(blocks[dest]);
                     }
                     g.destinations[0] = blocks[dest];
 
                     dest = i + 1;
+                    while (insts[dest] == null)
+                        dest++;
                     if (blocks[dest] == null) {
                         blocks[dest] = new BasicBlock();
-                        block_begins.add(dest);
+                        block_list.add(blocks[dest]);
                     }
                 } break;
                 case Branch br: {
                     int dest = i + br.offset;
                     if (blocks[dest] == null) {
                         blocks[dest] = new BasicBlock();
-                        block_begins.add(dest);
+                        block_list.add(blocks[dest]);
                     }
                     br.destinations[0] = blocks[dest];
 
                     dest = i + 1;
+                    while (insts[dest] == null)
+                        dest++;
                     if (blocks[dest] == null) {
                         blocks[dest] = new BasicBlock();
-                        block_begins.add(dest);
+                        block_list.add(blocks[dest]);
                     }
                     br.destinations[1] = blocks[dest];
                 } break;
@@ -106,6 +119,7 @@ public class Program {
                 if (current_block.terminator == null) {
                     var end = new Goto(0);
                     end.destinations[0] = blocks[i];
+                    blocks[i].incoming.add(current_block);
                     current_block.insts.add(end);
                     current_block.terminator = end;
                 }
@@ -143,15 +157,13 @@ public class Program {
                 }
             }
         }
-        return new MethodGraph(insts, blocks[0]);
+        return new MethodGraph(block_list);
     }
 
     static void resolveStack(BasicBlock b) {
         var stack = new ArrayList<Instruction>();
-        if (b.inputs != null) {
-            for (int i = 0; i < b.inputs.length; i++)
-                stack.add(b.inputs[i]);
-        }
+//         for (int blk_id = 0; i < blocks.size(); blk_id++) {
+//         }
 
         for (Instruction inst : b.insts) {
             for (int i = inst.ops.length; i-- > 0;) {
@@ -164,12 +176,14 @@ public class Program {
                 stack.add(inst);
             }
         }
+
         for (var dest : b.terminator.destinations) {
             if (dest.inputs == null) {
                 dest.inputs = new Phi[stack.size()];
 
                 for (int i = 0; i < stack.size(); i++) {
                     dest.inputs[i] = new Phi(dest.incoming.size());
+                    dest.insts.add(i, dest.inputs[i]);
                 }
                 resolveStack(dest);
             } else {
@@ -178,7 +192,7 @@ public class Program {
             int in_idx = dest.inputIndex(b);
 
             for (int i = 0; i < stack.size(); i++) {
-                dest.inputs[i].ops[in_idx] = stack.get(i);
+                dest.inputs[i].in[in_idx] = stack.get(i);
             }
         }
     }
@@ -299,57 +313,58 @@ public class Program {
                 case 0x5d:
                 case 0x5e:
                 case 0x5f: // swap
-                case 0x60: a[begin] = (new Add<Integer>()); break;
-                case 0x61: a[begin] = (new Add<Long>()); break;
-                case 0x62: a[begin] = (new Add<Float>()); break;
-                case 0x63: a[begin] = (new Add<Double>()); break;
-                case 0x64: a[begin] = (new Sub<Integer>()); break;
-                case 0x65: a[begin] = (new Sub<Long>()); break;
-                case 0x66: a[begin] = (new Sub<Float>()); break;
-                case 0x67: a[begin] = (new Sub<Double>()); break;
-                case 0x68: a[begin] = (new Mul<Integer>()); break;
-                case 0x69: a[begin] = (new Mul<Long>()); break;
-                case 0x6a: a[begin] = (new Mul<Float>()); break;
-                case 0x6b: a[begin] = (new Mul<Double>()); break;
-                case 0x6c: a[begin] = (new Div<Integer>()); break;
-                case 0x6d: a[begin] = (new Div<Long>()); break;
-                case 0x6e: a[begin] = (new Div<Float>()); break;
-                case 0x6f: a[begin] = (new Div<Double>()); break;
-                case 0x70: a[begin] = (new Rem<Integer>()); break;
-                case 0x71: a[begin] = (new Rem<Long>()); break;
-                case 0x72: a[begin] = (new Rem<Float>()); break;
-                case 0x73: a[begin] = (new Rem<Double>()); break;
-                case 0x74: a[begin] = (new Neg<Integer>()); break;
-                case 0x75: a[begin] = (new Neg<Long>()); break;
-                case 0x76: a[begin] = (new Neg<Float>()); break;
-                case 0x77: a[begin] = (new Neg<Double>()); break;
-                case 0x78: a[begin] = (new Shl<Integer>()); break;
-                case 0x79: a[begin] = (new Shl<Long>()); break;
-                case 0x7a: a[begin] = (new Shr<Integer>()); break;
-                case 0x7b: a[begin] = (new Shr<Long>()); break;
-                case 0x7c: a[begin] = (new UShr<Integer>()); break;
-                case 0x7d: a[begin] = (new UShr<Long>()); break;
-                case 0x7e: a[begin] = (new And<Integer>()); break;
-                case 0x7f: a[begin] = (new And<Long>()); break;
-                case 0x80: a[begin] = (new Or<Integer>()); break;
-                case 0x81: a[begin] = (new Or<Long>()); break;
-                case 0x82: a[begin] = (new XOr<Integer>()); break;
-                case 0x83: a[begin] = (new XOr<Long>()); break;
+                case 0x60: a[begin] = (new AddInteger()); break;
+                case 0x61: a[begin] = (new AddLong()); break;
+                case 0x62: a[begin] = (new AddFloat()); break;
+                case 0x63: a[begin] = (new AddDouble()); break;
+                case 0x64: a[begin] = (new SubInteger()); break;
+                case 0x65: a[begin] = (new SubLong()); break;
+                case 0x66: a[begin] = (new SubFloat()); break;
+                case 0x67: a[begin] = (new SubDouble()); break;
+                case 0x68: a[begin] = (new MulInteger()); break;
+                case 0x69: a[begin] = (new MulLong()); break;
+                case 0x6a: a[begin] = (new MulFloat()); break;
+                case 0x6b: a[begin] = (new MulDouble()); break;
+                case 0x6c: a[begin] = (new DivInteger()); break;
+                case 0x6d: a[begin] = (new DivLong()); break;
+                case 0x6e: a[begin] = (new DivFloat()); break;
+                case 0x6f: a[begin] = (new DivDouble()); break;
+                case 0x70: a[begin] = (new RemInteger()); break;
+                case 0x71: a[begin] = (new RemLong()); break;
+                case 0x72: a[begin] = (new RemFloat()); break;
+                case 0x73: a[begin] = (new RemDouble()); break;
+                case 0x74: a[begin] = (new NegInteger()); break;
+                case 0x75: a[begin] = (new NegLong()); break;
+                case 0x76: a[begin] = (new NegFloat()); break;
+                case 0x77: a[begin] = (new NegDouble()); break;
+                case 0x78: a[begin] = (new ShlInteger()); break;
+                case 0x79: a[begin] = (new ShlLong()); break;
+                case 0x7a: a[begin] = (new ShrInteger()); break;
+                case 0x7b: a[begin] = (new ShrLong()); break;
+                case 0x7c: a[begin] = (new UShrInteger()); break;
+                case 0x7d: a[begin] = (new UShrLong()); break;
+                case 0x7e: a[begin] = (new AndInteger()); break;
+                case 0x7f: a[begin] = (new AndLong()); break;
+                case 0x80: a[begin] = (new OrInteger()); break;
+                case 0x81: a[begin] = (new OrLong()); break;
+                case 0x82: a[begin] = (new XOrInteger()); break;
+                case 0x83: a[begin] = (new XOrLong()); break;
                 case 0x84: a[begin] = (new IInc(code[++i], code[++i])); break;
-                case 0x85: a[begin] = (new Convert<Integer, Long>()); break;
-                case 0x86: a[begin] = (new Convert<Integer, Float>()); break;
-                case 0x87: a[begin] = (new Convert<Integer, Double>()); break;
-                case 0x88: a[begin] = (new Convert<Long, Integer>()); break;
-                case 0x89: a[begin] = (new Convert<Long, Float>()); break;
-                case 0x8a: a[begin] = (new Convert<Long, Double>()); break;
-                case 0x8b: a[begin] = (new Convert<Float, Integer>()); break;
-                case 0x8c: a[begin] = (new Convert<Float, Long>()); break;
-                case 0x8d: a[begin] = (new Convert<Float, Double>()); break;
-                case 0x8e: a[begin] = (new Convert<Double, Long>()); break;
-                case 0x90: a[begin] = (new Convert<Double, Float>()); break;
-                case 0x91: a[begin] = (new Convert<Integer, Byte>()); break;
-                case 0x92: a[begin] = (new Convert<Integer, Character>()); break;
-                case 0x93: a[begin] = (new Convert<Integer, Short>()); break;
+                case 0x85: a[begin] = (new ConvertIntegerLong()); break;
+                case 0x86: a[begin] = (new ConvertIntegerFloat()); break;
+                case 0x87: a[begin] = (new ConvertIntegerDouble()); break;
+                case 0x88: a[begin] = (new ConvertLongInteger()); break;
+                case 0x89: a[begin] = (new ConvertLongFloat()); break;
+                case 0x8a: a[begin] = (new ConvertLongDouble()); break;
+                case 0x8b: a[begin] = (new ConvertFloatInteger()); break;
+                case 0x8c: a[begin] = (new ConvertFloatLong()); break;
+                case 0x8d: a[begin] = (new ConvertFloatDouble()); break;
+                case 0x8e: a[begin] = (new ConvertDoubleInteger()); break;
+                case 0x8f: a[begin] = (new ConvertDoubleLong()); break;
+                case 0x90: a[begin] = (new ConvertDoubleFloat()); break;
+                case 0x91: a[begin] = (new ConvertIntegerByte()); break;
+                case 0x92: a[begin] = (new ConvertIntegerCharacter()); break;
+                case 0x93: a[begin] = (new ConvertIntegerShort()); break;
                 case 0x94: a[begin] = (new LCmp()); break;
                 case 0x95: a[begin] = (new FCmp(false)); break;
                 case 0x96: a[begin] = (new FCmp(true)); break;
@@ -532,47 +547,98 @@ class StoreArray<T> extends Instruction {
 
 class BinaryOperation extends Instruction {
     BinaryOperation() { super(2); }
+    Instruction lhs() { return ops[0]; }
+    Instruction rhs() { return ops[1]; }
 }
-class Add<T> extends BinaryOperation {
-    Add() { }
+abstract class Add extends BinaryOperation { Add() { } }
+class AddInteger extends Add { AddInteger() { } }
+class AddLong extends Add { AddLong() { } }
+class AddFloat extends Add { AddFloat() { } }
+class AddDouble extends Add { AddDouble() { } }
+abstract class Sub extends BinaryOperation { Sub() { } }
+class SubInteger extends Sub { SubInteger() { } }
+class SubLong extends Sub { SubLong() { } }
+class SubFloat extends Sub { SubFloat() { } }
+class SubDouble extends Sub { SubDouble() { } }
+abstract class Mul extends BinaryOperation { Mul() { } }
+class MulInteger extends Mul { MulInteger() { } }
+class MulLong extends Mul { MulLong() { } }
+class MulFloat extends Mul { MulFloat() { } }
+class MulDouble extends Mul { MulDouble() { } }
+abstract class Div extends BinaryOperation { Div() { } }
+class DivInteger extends Div { DivInteger() { } }
+class DivLong extends Div { DivLong() { } }
+class DivFloat extends Div { DivFloat() { } }
+class DivDouble extends Div { DivDouble() { } }
+abstract class Rem extends BinaryOperation { Rem() { } }
+class RemInteger extends Rem { RemInteger() { } }
+class RemLong extends Rem { RemLong() { } }
+class RemFloat extends Rem { RemFloat() { } }
+class RemDouble extends Rem { RemDouble() { } }
+abstract class Shl extends BinaryOperation { Shl() { } }
+class ShlInteger extends Shl { ShlInteger() { } }
+class ShlLong extends Shl { ShlLong() { } }
+abstract class Shr extends BinaryOperation { Shr() { } }
+class ShrInteger extends Shr { ShrInteger() { } }
+class ShrLong extends Shr { ShrLong() { } }
+abstract class UShr extends BinaryOperation { UShr() { } }
+class UShrInteger extends UShr { UShrInteger() { } }
+class UShrLong extends UShr { UShrLong() { } }
+abstract class And extends BinaryOperation { And() { } }
+class AndInteger extends And { AndInteger() { } }
+class AndLong extends And { AndLong() { } }
+abstract class Or extends BinaryOperation { Or() { } }
+class OrInteger extends Or { OrInteger() { } }
+class OrLong extends Or { OrLong() { } }
+abstract class XOr extends BinaryOperation { XOr() { } }
+class XOrInteger extends XOr { XOrInteger() { } }
+class XOrLong extends XOr { XOrLong() { } }
+abstract class Neg extends Instruction {
+    Neg() { super(1); }
+    Instruction src() { return ops[0]; }
 }
-class Sub<T> extends BinaryOperation {
-    Sub() { }
+class NegInteger extends Neg { NegInteger() { } }
+class NegLong extends Neg { NegLong() { } }
+class NegFloat extends Neg { NegFloat() { } }
+class NegDouble extends Neg { NegDouble() { } }
+
+
+abstract class Convert extends Instruction {
+    Convert() {
+        super(1);
+    };
 }
-class Mul<T> extends BinaryOperation {
-    Mul() { }
-}
-class Div<T> extends BinaryOperation {
-    Div() { }
-}
-class Rem<T> extends BinaryOperation {
-    Rem() { }
-}
-class Shl<T> extends BinaryOperation {
-    Shl() { }
-}
-class Shr<T> extends BinaryOperation {
-    Shr() { }
-}
-class UShr<T> extends BinaryOperation {
-    UShr() { }
-}
-class And<T> extends BinaryOperation {
-    And() { }
-}
-class Or<T> extends BinaryOperation {
-    Or() { }
-}
-class XOr<T> extends BinaryOperation {
-    XOr() { }
+class ConvertIntegerLong extends Convert { ConvertIntegerLong() { } }
+class ConvertIntegerFloat extends Convert { ConvertIntegerFloat() { } }
+class ConvertIntegerDouble extends Convert { ConvertIntegerDouble() { } }
+class ConvertLongInteger extends Convert { ConvertLongInteger() { } }
+class ConvertLongFloat extends Convert { ConvertLongFloat() { } }
+class ConvertLongDouble extends Convert { ConvertLongDouble() { } }
+class ConvertFloatInteger extends Convert { ConvertFloatInteger() { } }
+class ConvertFloatLong extends Convert { ConvertFloatLong() { } }
+class ConvertFloatDouble extends Convert { ConvertFloatDouble() { } }
+class ConvertDoubleInteger extends Convert { ConvertDoubleInteger() { } }
+class ConvertDoubleLong extends Convert { ConvertDoubleLong() { } }
+class ConvertDoubleFloat extends Convert { ConvertDoubleFloat() { } }
+class ConvertIntegerByte extends Convert { ConvertIntegerByte() { } }
+class ConvertIntegerCharacter extends Convert { ConvertIntegerCharacter() { } }
+class ConvertIntegerShort extends Convert { ConvertIntegerShort() { } }
+
+class IInc extends Instruction {
+    int index;
+    int constant;
+
+    IInc(int i, int c) {
+        super(0, 0);
+        index = i;
+        if (c < 128) // Signed byte
+            constant = c;
+        else
+            constant = c - 256;
+    }
 }
 
-class Neg<T> extends Instruction {
-    Neg() { super(2); }
-}
-class LCmp<T> extends BinaryOperation {
-    LCmp() { }
-}
+class LCmp<T> extends BinaryOperation { LCmp() { } }
 class FCmp extends BinaryOperation {
     boolean less;
     FCmp(boolean l) { less = l; }
@@ -657,34 +723,19 @@ class MultiNewArray extends Instruction {
 
 
 
-class IInc extends Instruction {
-    int index;
-    int constant;
-
-    IInc(int i, int c) {
-        super(0, 0);
-        index = i;
-        if (c < 128) // Signed byte
-            constant = c;
-        else
-            constant = c - 256;
-    }
-}
-
-class Convert<From, To> extends Instruction {
-    Convert() {
-        super(1);
-    };
-}
 
 
 
 class Phi extends Instruction {
-    Phi(int count) { super(count); }
+    Instruction[] in;
+    Phi(int count) {
+        super(0);
+        in = new Instruction[count];
+    }
 
     Instruction allTheSame() {
-        var first = ops[0];
-        for (var o : ops) {
+        var first = in[0];
+        for (var o : in) {
             if (o != first)
                 return null;
         }
@@ -772,15 +823,20 @@ class Goto extends Terminator {
 class BasicBlock {
     ArrayList<BasicBlock> incoming;
     ArrayList<Instruction> insts;
+    int[] cycles;
 
     // Used for construction.
-    Instruction[] inputs;
+    Phi[] inputs;
 
     Terminator terminator;
 
     BasicBlock() {
         incoming = new ArrayList<BasicBlock>();
         insts = new ArrayList<Instruction>();
+    }
+
+    public void init() {
+        cycles = new int[insts.size()];
     }
 
     // PERFORMANCE Oh no!
@@ -827,7 +883,7 @@ class ClassFile {
         int version = file.readInt();
 
         var constants = new ConstObject[file.readShort()];
-        System.err.println ("#constants: " + (constants.length - 1));
+        System.err.println("#constants: " + (constants.length - 1));
         for (int i = 1; i < constants.length; i++)
             constants[i] = readConstant(file);
 
@@ -839,7 +895,7 @@ class ClassFile {
         for (int i = 0; i < interfaces.length; i++)
             interfaces[i] = (ClassReference) constants[file.readShort()];
 
-        fields = new HashMap();
+        fields = new HashMap<String, Field>();
         int fields_count = file.readShort();
         for (int i = 0; i < fields_count; i++) {
             short sub_access_flags = file.readShort();
@@ -849,7 +905,7 @@ class ClassFile {
             fields.put(name.val, new Field(sub_access_flags, name.val, descriptor.val, attributes));
         }
 
-        methods = new HashMap();
+        methods = new HashMap<String, Method>();
         int methods_count = file.readShort();
         for (int i = 0; i < methods_count; i++) {
             short sub_access_flags = file.readShort();
@@ -989,11 +1045,75 @@ class Package implements ConstObject {
 
 
 class MethodGraph {
-    Instruction[] insts;
+    // Instruction[] insts;
     BasicBlock entry;
-    MethodGraph(Instruction[] i, BasicBlock e) {
-        insts = i;
-        entry = e;
+    List<BasicBlock> blocks;
+
+
+    MethodGraph(List<BasicBlock> e) {
+        blocks = e;
+        entry = e.get(0);
+    }
+    void print(PrintWriter p) throws IOException  {
+        new Printer(p).print(entry);
+    }
+
+    void replace(Instruction a, Instruction b) {
+        for (var blk : blocks) {
+            blk.insts.remove(a);
+
+            for (var inst : blk.insts) {
+                for (int j = 0; j < inst.ops.length; j++) {
+                    if (inst.ops[j] == a)
+                        inst.ops[j] = b;
+                }
+            }
+        }
+    }
+
+    class Printer {
+        int block_id;
+        int inst_id;
+        PrintWriter out;
+
+        Printer(PrintWriter p) { out = p; }
+
+        void print(BasicBlock b) throws IOException {
+            var visited = new HashMap<BasicBlock, Integer>();
+            visited.put(b, 0);
+            block_id = 1;
+            inst_id = 0;
+            printBlock(b, visited);
+        }
+
+        void printBlock(BasicBlock b, HashMap<BasicBlock, Integer> visited) {
+            int self = block_id;
+            String content = "Block " + self;
+            var counts = b.cycles;
+            for (int i = 0; i < b.insts.size(); i++) {
+                var inst = b.insts.get(i);
+                if (counts != null)
+                    content = content + " | {" + inst.getClass().getName() + " | " + counts[i] + "}";
+                else
+                    content = content + " | " + inst.getClass().getName() + "";
+            }
+
+            out.printf("  bb%d [shape=record, label=\"{%s}\"]\n", self, content);
+            for (var d : b.terminator.destinations) {
+                var got = visited.putIfAbsent(d, block_id+1);
+                int dest_id;
+                if (got == null) {
+                    block_id++;
+                    dest_id = block_id;
+                    out.printf("  bb%d -> bb%d\n", self, dest_id);
+                    printBlock(d, visited);
+                } else {
+                    dest_id = got;
+                    out.printf("  bb%d -> bb%d\n", self, dest_id);
+                }
+
+            }
+        }
     }
 }
 
@@ -1018,5 +1138,112 @@ class Method {
         name = n;
         descriptor = d;
         attributes = a;
+    }
+}
+
+
+// Inefficient as hell, but I'm extremely short on time.
+class Executor {
+    HashMap<Instruction, Object> current_invocation_values;
+
+    Executor() {
+        current_invocation_values = new HashMap<Instruction, Object>();
+    }
+
+    Object run(MethodGraph graph, Object[] args) {
+        BasicBlock block = graph.entry;
+        while (true) {
+            for (int idx = 0; idx < block.insts.size(); idx++) {
+                var inst = block.insts.get(idx);
+                int cost = 1;
+                Object result = null;
+
+                switch (inst) {
+                    case LoadLocal i: result   = args[i.index]; break;
+
+                    case AddInteger i: result  = (Integer)load(i.lhs()) + (Integer)load(i.rhs()); break;
+                    case AddLong i: result     = (Long)load(i.lhs()) + (Long)load(i.rhs()); break;
+                    case AddFloat i: result    = (Float)load(i.lhs()) + (Float)load(i.rhs()); break;
+                    case AddDouble i: result   = (Double)load(i.lhs()) + (Double)load(i.rhs()); break;
+                    case SubInteger i: result  = (Integer)load(i.lhs()) + (Integer)load(i.rhs()); break;
+                    case SubLong i: result     = (Long)load(i.lhs()) + (Long)load(i.rhs()); break;
+                    case SubFloat i: result    = (Float)load(i.lhs()) + (Float)load(i.rhs()); break;
+                    case SubDouble i: result   = (Double)load(i.lhs()) + (Double)load(i.rhs()); break;
+                    case MulInteger i: result  = (Integer)load(i.lhs()) + (Integer)load(i.rhs()); cost = 3; break;
+                    case MulLong i: result     = (Long)load(i.lhs()) + (Long)load(i.rhs()); cost = 3; break;
+                    case MulFloat i: result    = (Float)load(i.lhs()) + (Float)load(i.rhs()); cost = 3; break;
+                    case MulDouble i: result   = (Double)load(i.lhs()) + (Double)load(i.rhs()); cost = 3; break;
+                    case DivInteger i: result  = (Integer)load(i.lhs()) + (Integer)load(i.rhs()); cost = 3; break;
+                    case DivLong i: result     = (Long)load(i.lhs()) + (Long)load(i.rhs()); cost = 3; break;
+                    case DivFloat i: result    = (Float)load(i.lhs()) + (Float)load(i.rhs()); cost = 3; break;
+                    case DivDouble i: result   = (Double)load(i.lhs()) + (Double)load(i.rhs()); cost = 3; break;
+                    case RemInteger i: result  = (Integer)load(i.lhs()) + (Integer)load(i.rhs()); cost = 3; break;
+                    case RemLong i: result     = (Long)load(i.lhs()) + (Long)load(i.rhs()); cost = 3; break;
+                    case RemFloat i: result    = (Float)load(i.lhs()) + (Float)load(i.rhs()); cost = 3; break;
+                    case RemDouble i: result   = (Double)load(i.lhs()) + (Double)load(i.rhs()); cost = 3; break;
+                    case ShlInteger i: result  = (Integer)load(i.lhs()) + (Integer)load(i.rhs()); break;
+                    case ShlLong i: result     = (Long)load(i.lhs()) + (Long)load(i.rhs()); break;
+                    case ShrInteger i: result  = (Integer)load(i.lhs()) + (Integer)load(i.rhs()); break;
+                    case ShrLong i: result     = (Long)load(i.lhs()) + (Long)load(i.rhs()); break;
+                    case UShrInteger i: result = (Integer)load(i.lhs()) + (Integer)load(i.rhs()); break;
+                    case UShrLong i: result    = (Long)load(i.lhs()) + (Long)load(i.rhs()); break;
+                    case AndInteger i: result  = (Integer)load(i.lhs()) + (Integer)load(i.rhs()); break;
+                    case AndLong i: result     = (Long)load(i.lhs()) + (Long)load(i.rhs()); break;
+                    case OrInteger i: result   = (Integer)load(i.lhs()) + (Integer)load(i.rhs()); break;
+                    case OrLong i: result      = (Long)load(i.lhs()) + (Long)load(i.rhs()); break;
+                    case XOrInteger i: result  = (Integer)load(i.lhs()) + (Integer)load(i.rhs()); break;
+                    case XOrLong i: result     = (Long)load(i.lhs()) + (Long)load(i.rhs()); break;
+                    case NegInteger i: result  = -(Integer)load(i.src()); break;
+                    case NegLong i: result     = -(Long)load(i.src()); break;
+                    case NegFloat i: result    = -(Integer)load(i.src()); break;
+                    case NegDouble i: result   = -(Long)load(i.src()); break;
+
+                    case ConvertIntegerLong i: result      = ((Integer) load(i.ops[0])).longValue(); break;
+                    case ConvertIntegerFloat i: result     = ((Integer) load(i.ops[0])).floatValue(); break;
+                    case ConvertIntegerDouble i: result    = ((Integer) load(i.ops[0])).doubleValue(); break;
+                    case ConvertLongInteger i: result      = ((Long) load(i.ops[0])).intValue(); break;
+                    case ConvertLongFloat i: result        = ((Long) load(i.ops[0])).floatValue(); break;
+                    case ConvertLongDouble i: result       = ((Long) load(i.ops[0])).doubleValue(); break;
+                    case ConvertFloatInteger i: result     = ((Float) load(i.ops[0])).intValue(); break;
+                    case ConvertFloatLong i: result        = ((Float) load(i.ops[0])).longValue(); break;
+                    case ConvertFloatDouble i: result      = ((Float) load(i.ops[0])).doubleValue(); break;
+                    case ConvertDoubleInteger i: result    = ((Double) load(i.ops[0])).intValue(); break;
+                    case ConvertDoubleLong i: result       = ((Double) load(i.ops[0])).longValue(); break;
+                    case ConvertDoubleFloat i: result      = ((Double) load(i.ops[0])).floatValue(); break;
+                    case ConvertIntegerByte i: result      = ((Integer) load(i.ops[0])).byteValue(); break;
+                    case ConvertIntegerCharacter i: result = (char) ((Integer) load(i.ops[0])).intValue(); break;
+                    case ConvertIntegerShort i: result     = ((Integer) load(i.ops[0])).shortValue(); break;
+
+                    case LoadArray i: result = ((Object[]) load(inst.ops[0]))[(Integer) load(inst.ops[1])]; break;
+                    case StoreArray i: ((Object[]) load(inst.ops[0]))[(Integer) load(inst.ops[1])] = load(inst.ops[2]); break;
+
+                    case Goto g:
+                        block = g.destinations[0];
+                        cost = 0;
+                        break;
+                    case If i:
+                        if ((Boolean) load(i.condition()))
+                            block = i.on_true();
+                        else
+                            block = i.on_false();
+                        break;
+                    case Return r:
+                        return load(r.ops[0]);
+                    default:
+                        throw new Error("TODO: implement " + inst.getClass().getName());
+                }
+
+                current_invocation_values.put(inst, result);
+
+                block.cycles[idx] += cost;
+            }
+
+            assert false : "This block did not have a terminator.";
+        }
+    }
+
+    Object load(Instruction i) {
+        assert current_invocation_values.containsKey(i) : "The code is trying to use a value before it was computed!";
+        return current_invocation_values.get(i);
     }
 }
