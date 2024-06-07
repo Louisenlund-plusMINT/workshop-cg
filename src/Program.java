@@ -37,12 +37,10 @@ public class Program {
         if (code == null)
             throw new Error("method does not contain code!");
 
-        var insts = parse(code, cf);
-//         for (var v : insts) {
-//             if (v != null)
-//                 System.err.print(v.getClass().getName() + "\n");
-//         }
-        var graph = stackify(insts);
+        var parsed = parseCode(new DataInputStream(new ByteArrayInputStream(code)), cf);
+
+        parsed.param_count = 2; // FIXME FIND THIS FROM THE TYPE OR SOMETHING
+        var graph = stackify(parsed);
 
         var executor = new Executor();
         var run_args = new Object[2];
@@ -63,7 +61,10 @@ public class Program {
 
     }
 
-    static MethodGraph stackify(Instruction[] insts) {
+    static MethodGraph stackify(ParsedMethod parsed) {
+        var insts = parsed.insts;
+        var max_locals = parsed.max_locals;
+        var param_count = parsed.param_count;
         var blocks = new BasicBlock[insts.length];
         var current_block = new BasicBlock();
         blocks[0] = current_block;
@@ -154,29 +155,78 @@ public class Program {
 
         resolveStack(blocks[0]);
 
-        // Clean up unnecessary phi nodes.
-        for (var inst : insts) {
-            if (inst == null) continue;
-
-            var ops = inst.ops;
-            for (int i = 0; i < ops.length; i++) {
-                if (ops[i] instanceof Phi p) {
-                    var same = p.allTheSame();
-                    if (same != null)
-                        ops[i] = same;
+        // Init locals lists
+        for (var blk : block_list) {
+                blk.inputs = new Instruction[max_locals];
+            if (blk == blocks[0]) {
+                for (int i = 0; i < param_count; i++) {
+                    blk.inputs[i] = new GetArg(i);
+                    blk.insts.add(i, blk.inputs[i]);
+                }
+            } else {
+                for (int i = 0; i < blk.inputs.length; i++) {
+                    blk.inputs[i] = new Phi(blk.incoming.size());
+                    blk.insts.add(i, blk.inputs[i]);
                 }
             }
         }
-        return new MethodGraph(block_list);
+
+        var method = new MethodGraph(block_list, max_locals);
+
+        // SSAify locals.
+        for (var blk : block_list) {
+            var locals = blk.inputs.clone();
+            for (int i = 0; i < blk.insts.size(); i++) {
+                var inst = blk.insts.get(i);
+                if (inst instanceof LoadLocal l) {
+                    assert locals[l.index] != null : "Loading undefined local!";
+                    method.replaceAllUsage(inst, locals[l.index]);
+                    blk.insts.remove(i);
+                    i--;
+                } else if (inst instanceof StoreLocal l) {
+                    locals[l.index] = l.ops[0];
+                    blk.insts.remove(i);
+                    i--;
+                }
+            }
+            for (var dest : blk.terminator.destinations) {
+                int incoming_direction = dest.inputIndex(blk);
+                for (int i = 0; i < dest.inputs.length; i++) {
+                    ((Phi) dest.inputs[i]).ops[incoming_direction] = locals[i];
+                }
+            }
+        }
+
+        for (var blk : block_list)
+            blk.inputs = null;
+
+
+        // Clean up unnecessary phi nodes.
+        for (int iter = 0; iter < 10; iter++) {
+            for (var blk : block_list) {
+                for (int i = 0; i < blk.insts.size(); i++) {
+                    var inst = blk.insts.get(i);
+                    if (inst instanceof Phi p) {
+                        var same = p.allTheSame();
+                        if (same != null) {
+                            method.replaceAllUsage(p, same);
+                            blk.insts.remove(i);
+                            i--;
+                        }
+                    }
+                }
+            }
+        }
+
+        return method;
     }
 
     static void resolveStack(BasicBlock b) {
         var stack = new ArrayList<Instruction>();
-//         for (int blk_id = 0; i < blocks.size(); blk_id++) {
-//         }
 
         for (Instruction inst : b.insts) {
-            for (int i = inst.ops.length; i-- > 0;) {
+            int end = inst instanceof Phi ? 0 : inst.ops.length;
+            for (int i = end; i-- > 0;) {
                 int back = stack.size() - 1;
                 inst.ops[i] = stack.get(back);
                 stack.remove(back);
@@ -202,19 +252,20 @@ public class Program {
             int in_idx = dest.inputIndex(b);
 
             for (int i = 0; i < stack.size(); i++) {
-                dest.inputs[i].in[in_idx] = stack.get(i);
+                ((Phi) dest.inputs[i]).ops[in_idx] = stack.get(i);
             }
         }
     }
 
-    static Instruction[] parse(byte[] data, ClassFile cf) throws IOException {
-        var is = new DataInputStream(new ByteArrayInputStream(data));
-        var max_stack = is.readShort();
-        var max_locals = is.readShort();
+    static ParsedMethod parseCode(DataInputStream is, ClassFile cf) throws IOException {
+        var parsed = new ParsedMethod();
+        parsed.max_stack = is.readShort();
+        parsed.max_locals = is.readShort();
+
         var code = new byte[is.readInt()];
         is.read(code);
 
-        var a = new Instruction[code.length];
+        var a = parsed.insts = new Instruction[code.length];
         ConstObject[] const_pool = cf.constants;
 
         int idx;
@@ -499,10 +550,16 @@ public class Program {
             }
         }
 
-        return a;
+        return parsed;
     }
 }
 
+class ParsedMethod {
+    int max_stack;
+    int max_locals;
+    int param_count;
+    Instruction[] insts;
+}
 
 abstract class Instruction {
     Instruction ops[];
@@ -541,6 +598,10 @@ class StoreLocal<T> extends Instruction {
         super(1, 0);
         index = i;
     }
+}
+class GetArg extends Instruction {
+    int index;
+    GetArg(int i) { super(0); index = i; }
 }
 
 class LoadArray<T> extends Instruction {
@@ -737,15 +798,13 @@ class MultiNewArray extends Instruction {
 
 
 class Phi extends Instruction {
-    Instruction[] in;
     Phi(int count) {
-        super(0);
-        in = new Instruction[count];
+        super(count);
     }
 
     Instruction allTheSame() {
-        var first = in[0];
-        for (var o : in) {
+        var first = ops[0];
+        for (var o : ops) {
             if (o != first)
                 return null;
         }
@@ -836,7 +895,7 @@ class BasicBlock {
     int[] cycles;
 
     // Used for construction.
-    Phi[] inputs;
+    Instruction[] inputs;
 
     Terminator terminator;
 
@@ -1058,20 +1117,20 @@ class MethodGraph {
     // Instruction[] insts;
     BasicBlock entry;
     List<BasicBlock> blocks;
+    int max_locals;
 
 
-    MethodGraph(List<BasicBlock> e) {
+    MethodGraph(List<BasicBlock> e, int m) {
         blocks = e;
         entry = e.get(0);
+        max_locals = m;
     }
     void print(PrintWriter p) throws IOException  {
         new Printer(p).print(entry);
     }
 
-    void replace(Instruction a, Instruction b) {
+    void replaceAllUsage(Instruction a, Instruction b) {
         for (var blk : blocks) {
-            blk.insts.remove(a);
-
             for (var inst : blk.insts) {
                 for (int j = 0; j < inst.ops.length; j++) {
                     if (inst.ops[j] == a)
@@ -1096,7 +1155,11 @@ class MethodGraph {
             visited = new HashMap<BasicBlock, Integer>();
             visited.put(b, 0);
             inst_ids = new HashMap<Instruction, Integer>();
-
+            for (var blk : blocks) {
+                for (var inst : blk.insts) {
+                    inst_ids.put(inst, inst_id++);
+                }
+            }
 
             block_id = 1;
             inst_id = 0;
@@ -1107,11 +1170,6 @@ class MethodGraph {
             int self = block_id;
             String content = " { Block " + self;
             for (var inst : b.insts) {
-                inst_ids.put(inst, inst_id++);
-            }
-            for (int i = 0; i < b.insts.size(); i++) {
-                var inst = b.insts.get(i);
-
                 content = content + " | ";
 
                 content += "i" + inst_ids.get(inst) + ": " + inst.getClass().getName();
@@ -1180,7 +1238,7 @@ class Executor {
     }
 
     Object run(MethodGraph graph, Object[] args) {
-        var locals = new Object[128];
+        var locals = new Object[graph.max_locals];
         System.arraycopy(args, 0, locals, 0, args.length);
 
         BasicBlock block = graph.entry;
@@ -1200,43 +1258,44 @@ class Executor {
 
                 switch (inst) {
                     case Constant i: result = i.val; cost = 0; break;
-                    case Phi i: result = load(i.in[incoming_direction]); cost = 0; break;
+                    case Phi i: result = load(i.ops[incoming_direction]); cost = 0; break;
 
                     case LoadLocal i: result   = locals[i.index]; break;
                     case StoreLocal i: locals[i.index] = load(i.ops[0]); break;
+                    case GetArg i: result = args[i.index]; break;
 
                     case AddInteger i: result  = (Integer)load(i.lhs()) + (Integer)load(i.rhs()); break;
                     case AddLong i: result     = (Long)load(i.lhs()) + (Long)load(i.rhs()); break;
                     case AddFloat i: result    = (Float)load(i.lhs()) + (Float)load(i.rhs()); break;
                     case AddDouble i: result   = (Double)load(i.lhs()) + (Double)load(i.rhs()); break;
-                    case SubInteger i: result  = (Integer)load(i.lhs()) + (Integer)load(i.rhs()); break;
-                    case SubLong i: result     = (Long)load(i.lhs()) + (Long)load(i.rhs()); break;
-                    case SubFloat i: result    = (Float)load(i.lhs()) + (Float)load(i.rhs()); break;
-                    case SubDouble i: result   = (Double)load(i.lhs()) + (Double)load(i.rhs()); break;
-                    case MulInteger i: result  = (Integer)load(i.lhs()) + (Integer)load(i.rhs()); cost = 3; break;
-                    case MulLong i: result     = (Long)load(i.lhs()) + (Long)load(i.rhs()); cost = 3; break;
-                    case MulFloat i: result    = (Float)load(i.lhs()) + (Float)load(i.rhs()); cost = 3; break;
-                    case MulDouble i: result   = (Double)load(i.lhs()) + (Double)load(i.rhs()); cost = 3; break;
-                    case DivInteger i: result  = (Integer)load(i.lhs()) + (Integer)load(i.rhs()); cost = 3; break;
-                    case DivLong i: result     = (Long)load(i.lhs()) + (Long)load(i.rhs()); cost = 3; break;
-                    case DivFloat i: result    = (Float)load(i.lhs()) + (Float)load(i.rhs()); cost = 3; break;
-                    case DivDouble i: result   = (Double)load(i.lhs()) + (Double)load(i.rhs()); cost = 3; break;
-                    case RemInteger i: result  = (Integer)load(i.lhs()) + (Integer)load(i.rhs()); cost = 3; break;
-                    case RemLong i: result     = (Long)load(i.lhs()) + (Long)load(i.rhs()); cost = 3; break;
-                    case RemFloat i: result    = (Float)load(i.lhs()) + (Float)load(i.rhs()); cost = 3; break;
-                    case RemDouble i: result   = (Double)load(i.lhs()) + (Double)load(i.rhs()); cost = 3; break;
-                    case ShlInteger i: result  = (Integer)load(i.lhs()) + (Integer)load(i.rhs()); break;
-                    case ShlLong i: result     = (Long)load(i.lhs()) + (Long)load(i.rhs()); break;
-                    case ShrInteger i: result  = (Integer)load(i.lhs()) + (Integer)load(i.rhs()); break;
-                    case ShrLong i: result     = (Long)load(i.lhs()) + (Long)load(i.rhs()); break;
-                    case UShrInteger i: result = (Integer)load(i.lhs()) + (Integer)load(i.rhs()); break;
-                    case UShrLong i: result    = (Long)load(i.lhs()) + (Long)load(i.rhs()); break;
-                    case AndInteger i: result  = (Integer)load(i.lhs()) + (Integer)load(i.rhs()); break;
-                    case AndLong i: result     = (Long)load(i.lhs()) + (Long)load(i.rhs()); break;
-                    case OrInteger i: result   = (Integer)load(i.lhs()) + (Integer)load(i.rhs()); break;
-                    case OrLong i: result      = (Long)load(i.lhs()) + (Long)load(i.rhs()); break;
-                    case XOrInteger i: result  = (Integer)load(i.lhs()) + (Integer)load(i.rhs()); break;
-                    case XOrLong i: result     = (Long)load(i.lhs()) + (Long)load(i.rhs()); break;
+                    case SubInteger i: result  = (Integer)load(i.lhs()) - (Integer)load(i.rhs()); break;
+                    case SubLong i: result     = (Long)load(i.lhs()) - (Long)load(i.rhs()); break;
+                    case SubFloat i: result    = (Float)load(i.lhs()) - (Float)load(i.rhs()); break;
+                    case SubDouble i: result   = (Double)load(i.lhs()) - (Double)load(i.rhs()); break;
+                    case MulInteger i: result  = (Integer)load(i.lhs()) * (Integer)load(i.rhs()); cost = 3; break;
+                    case MulLong i: result     = (Long)load(i.lhs()) * (Long)load(i.rhs()); cost = 3; break;
+                    case MulFloat i: result    = (Float)load(i.lhs()) * (Float)load(i.rhs()); cost = 3; break;
+                    case MulDouble i: result   = (Double)load(i.lhs()) * (Double)load(i.rhs()); cost = 3; break;
+                    case DivInteger i: result  = (Integer)load(i.lhs()) / (Integer)load(i.rhs()); cost = 3; break;
+                    case DivLong i: result     = (Long)load(i.lhs()) / (Long)load(i.rhs()); cost = 3; break;
+                    case DivFloat i: result    = (Float)load(i.lhs()) / (Float)load(i.rhs()); cost = 3; break;
+                    case DivDouble i: result   = (Double)load(i.lhs()) / (Double)load(i.rhs()); cost = 3; break;
+                    case RemInteger i: result  = (Integer)load(i.lhs()) % (Integer)load(i.rhs()); cost = 3; break;
+                    case RemLong i: result     = (Long)load(i.lhs()) % (Long)load(i.rhs()); cost = 3; break;
+                    case RemFloat i: result    = (Float)load(i.lhs()) % (Float)load(i.rhs()); cost = 3; break;
+                    case RemDouble i: result   = (Double)load(i.lhs()) % (Double)load(i.rhs()); cost = 3; break;
+                    case ShlInteger i: result  = (Integer)load(i.lhs()) << (Integer)load(i.rhs()); break;
+                    case ShlLong i: result     = (Long)load(i.lhs()) << (Long)load(i.rhs()); break;
+                    case ShrInteger i: result  = (Integer)load(i.lhs()) >> (Integer)load(i.rhs()); break;
+                    case ShrLong i: result     = (Long)load(i.lhs()) >> (Long)load(i.rhs()); break;
+                    case UShrInteger i: result = (Integer)load(i.lhs()) >>> (Integer)load(i.rhs()); break;
+                    case UShrLong i: result    = (Long)load(i.lhs()) >>> (Long)load(i.rhs()); break;
+                    case AndInteger i: result  = (Integer)load(i.lhs()) & (Integer)load(i.rhs()); break;
+                    case AndLong i: result     = (Long)load(i.lhs()) & (Long)load(i.rhs()); break;
+                    case OrInteger i: result   = (Integer)load(i.lhs()) | (Integer)load(i.rhs()); break;
+                    case OrLong i: result      = (Long)load(i.lhs()) | (Long)load(i.rhs()); break;
+                    case XOrInteger i: result  = (Integer)load(i.lhs()) ^ (Integer)load(i.rhs()); break;
+                    case XOrLong i: result     = (Long)load(i.lhs()) ^ (Long)load(i.rhs()); break;
                     case NegInteger i: result  = -(Integer)load(i.src()); break;
                     case NegLong i: result     = -(Long)load(i.src()); break;
                     case NegFloat i: result    = -(Integer)load(i.src()); break;
