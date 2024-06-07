@@ -44,13 +44,23 @@ public class Program {
 //         }
         var graph = stackify(insts);
 
-        try (var out = new PrintWriter("/tmp/graph.dot")) {
-            out.print("digraph {{\n  compound=true\n  node [shape=rect]\n");
+        var executor = new Executor();
+        var run_args = new Object[2];
+        run_args[0] = 1;
+        var obj_arg = new Object[1];
+        obj_arg[0] = 1;
+        run_args[1] = obj_arg;
+
+        executor.run(graph, run_args);
+
+        try (var out = new PrintWriter("graph.dot")) {
+            out.print("digraph {\n  compound=true\n  node [shape=rect]\n");
             graph.print(out);
-            out.print("}}\n");
+            out.print("}\n");
         }
         Runtime r = Runtime.getRuntime();
-        r.exec("dot -Tpdf /tmp/graph.dot -o ./graph.pdf");
+        r.exec("dot -Tpdf graph.dot -o ./graph.pdf");
+
     }
 
     static MethodGraph stackify(Instruction[] insts) {
@@ -1075,30 +1085,50 @@ class MethodGraph {
         int block_id;
         int inst_id;
         PrintWriter out;
+        HashMap<BasicBlock, Integer> visited;
+        HashMap<Instruction, Integer> inst_ids;
 
-        Printer(PrintWriter p) { out = p; }
-
-        void print(BasicBlock b) throws IOException {
-            var visited = new HashMap<BasicBlock, Integer>();
-            visited.put(b, 0);
-            block_id = 1;
-            inst_id = 0;
-            printBlock(b, visited);
+        Printer(PrintWriter p) {
+            out = p;
         }
 
-        void printBlock(BasicBlock b, HashMap<BasicBlock, Integer> visited) {
+        void print(BasicBlock b) throws IOException {
+            visited = new HashMap<BasicBlock, Integer>();
+            visited.put(b, 0);
+            inst_ids = new HashMap<Instruction, Integer>();
+
+
+            block_id = 1;
+            inst_id = 0;
+            printBlock(b);
+        }
+
+        void printBlock(BasicBlock b) {
             int self = block_id;
-            String content = "Block " + self;
-            var counts = b.cycles;
+            String content = " { Block " + self;
+            for (var inst : b.insts) {
+                inst_ids.put(inst, inst_id++);
+            }
             for (int i = 0; i < b.insts.size(); i++) {
                 var inst = b.insts.get(i);
-                if (counts != null)
-                    content = content + " | {" + inst.getClass().getName() + " | " + counts[i] + "}";
-                else
-                    content = content + " | " + inst.getClass().getName() + "";
+
+                content = content + " | ";
+
+                content += "i" + inst_ids.get(inst) + ": " + inst.getClass().getName();
+                for (var op : inst.ops) {
+                    content += " i" + inst_ids.get(op);
+                }
+            }
+            content += "} ";
+
+            if (b.cycles != null) {
+                content += " | {cyc";
+                for (var c : b.cycles)
+                    content += "|" + c;
+                content += "}";
             }
 
-            out.printf("  bb%d [shape=record, label=\"{%s}\"]\n", self, content);
+            out.printf("  bb%d [shape=record, labeljust=l, label=\"%s\"]\n", self, content);
             for (var d : b.terminator.destinations) {
                 var got = visited.putIfAbsent(d, block_id+1);
                 int dest_id;
@@ -1106,12 +1136,11 @@ class MethodGraph {
                     block_id++;
                     dest_id = block_id;
                     out.printf("  bb%d -> bb%d\n", self, dest_id);
-                    printBlock(d, visited);
+                    printBlock(d);
                 } else {
                     dest_id = got;
                     out.printf("  bb%d -> bb%d\n", self, dest_id);
                 }
-
             }
         }
     }
@@ -1151,15 +1180,30 @@ class Executor {
     }
 
     Object run(MethodGraph graph, Object[] args) {
+        var locals = new Object[128];
+        System.arraycopy(args, 0, locals, 0, args.length);
+
         BasicBlock block = graph.entry;
+        BasicBlock next;
+
+        int incoming_direction = 0;
         while (true) {
-            for (int idx = 0; idx < block.insts.size(); idx++) {
+            var cycles = block.cycles;
+            int end = block.insts.size();
+            if (cycles == null)
+                cycles = block.cycles = new int[end];
+
+            for (int idx = 0; idx < end; idx++) {
                 var inst = block.insts.get(idx);
                 int cost = 1;
                 Object result = null;
 
                 switch (inst) {
-                    case LoadLocal i: result   = args[i.index]; break;
+                    case Constant i: result = i.val; cost = 0; break;
+                    case Phi i: result = load(i.in[incoming_direction]); cost = 0; break;
+
+                    case LoadLocal i: result   = locals[i.index]; break;
+                    case StoreLocal i: locals[i.index] = load(i.ops[0]); break;
 
                     case AddInteger i: result  = (Integer)load(i.lhs()) + (Integer)load(i.rhs()); break;
                     case AddLong i: result     = (Long)load(i.lhs()) + (Long)load(i.rhs()); break;
@@ -1216,17 +1260,54 @@ class Executor {
 
                     case LoadArray i: result = ((Object[]) load(inst.ops[0]))[(Integer) load(inst.ops[1])]; break;
                     case StoreArray i: ((Object[]) load(inst.ops[0]))[(Integer) load(inst.ops[1])] = load(inst.ops[2]); break;
+                    case ArrayLength i: result = ((Object[]) load(inst.ops[0])).length; break;
 
-                    case Goto g:
-                        block = g.destinations[0];
+                    case Goto g: {
+                        next = g.destinations[0];
+                        incoming_direction = next.inputIndex(block);
+                        block = next;
+                        end = 0;
                         cost = 0;
-                        break;
-                    case If i:
-                        if ((Boolean) load(i.condition()))
-                            block = i.on_true();
+                    } continue;
+                    case If i: {
+                        int cond = (Integer) load(i.condition());
+                        boolean res = false;
+                        switch (i.comparison) {
+                            case Compare.Lt: res = cond < 0; break;
+                            case Compare.Ge: res = cond >= 0; break;
+                            case Compare.Gt: res = cond > 0; break;
+                            case Compare.Le: res = cond <= 0; break;
+                            case Compare.Eq: res = cond == 0; break;
+                            case Compare.Ne: res = cond != 0; break;
+                        }
+                        if (res)
+                            next = i.on_true();
                         else
-                            block = i.on_false();
-                        break;
+                            next = i.on_false();
+                        incoming_direction = next.inputIndex(block);
+                        block = next;
+                        end = 0;
+                    } continue;
+                    case IfCmp i: {
+                        int lhs = (Integer) load(i.lhs());
+                        int rhs = (Integer) load(i.rhs());
+                        boolean res = false;
+                        switch (i.comparison) {
+                            case Compare.Lt: res = lhs < rhs; break;
+                            case Compare.Ge: res = lhs >= rhs; break;
+                            case Compare.Gt: res = lhs > rhs; break;
+                            case Compare.Le: res = lhs <= rhs; break;
+                            case Compare.Eq: res = lhs == rhs; break;
+                            case Compare.Ne: res = lhs != rhs; break;
+                        }
+                        if (res)
+                            next = i.on_true();
+                        else
+                            next = i.on_false();
+                        incoming_direction = next.inputIndex(block);
+                        block = next;
+                        end = 0;
+                    } continue;
                     case Return r:
                         return load(r.ops[0]);
                     default:
@@ -1235,7 +1316,7 @@ class Executor {
 
                 current_invocation_values.put(inst, result);
 
-                block.cycles[idx] += cost;
+                cycles[idx] += cost;
             }
 
             assert false : "This block did not have a terminator.";
