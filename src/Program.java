@@ -42,6 +42,8 @@ public class Program {
         parsed.param_count = 2; // FIXME FIND THIS FROM THE TYPE OR SOMETHING
         var graph = stackify(parsed);
 
+        optimize(graph);
+
         var executor = new Executor();
         var run_args = new Object[2];
         run_args[0] = 3;
@@ -57,8 +59,34 @@ public class Program {
         }
         Runtime r = Runtime.getRuntime();
         r.exec("dot -Tpdf graph.dot -o ./graph.pdf");
-
     }
+
+
+
+
+
+
+
+
+
+
+    static void optimize(MethodGraph g) {
+        var blocks = g.blocks;
+        // =============================
+        // =============================
+        // HIER KÖNNTE DEIN CODE STEHEN!
+        // =============================
+        // =============================
+    }
+
+
+
+
+
+
+
+
+
 
     static MethodGraph stackify(ParsedMethod parsed) {
         var insts = parsed.insts;
@@ -583,6 +611,25 @@ abstract class Instruction {
         result_count = res_count;
     }
 
+    public boolean equals(Object obj) {
+        if (obj instanceof Instruction i) {
+            if (i.getClass() != getClass())
+                return false;
+            return argumentsEqual(i);
+        } else {
+            return false;
+        }
+    }
+    boolean argumentsEqual(Instruction other) {
+        if (ops.length != other.ops.length)
+            return false;
+        for (int i = 0; i < ops.length; i++) {
+            if (ops[i] != other.ops[i])
+                return false;
+        }
+        return true;
+    }
+
     public String toString() {
         return getClass().getName();
     }
@@ -599,6 +646,13 @@ class Constant<T> extends Instruction {
 
     public String toString() {
         return "Constant " + val.toString();
+    }
+
+    public boolean equals(Object obj) {
+        if (obj instanceof Constant c)
+            return val == c.val;
+        else
+            return false;
     }
 }
 
