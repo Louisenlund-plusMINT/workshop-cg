@@ -44,12 +44,11 @@ public class Program {
 
         var executor = new Executor();
         var run_args = new Object[2];
-        run_args[0] = 1;
-        var obj_arg = new Object[1];
-        obj_arg[0] = 1;
-        run_args[1] = obj_arg;
+        run_args[0] = 3;
+        run_args[1] = new Object[]{1, 3, 4, 5, 7, 8, 20, 21, 25};
 
-        executor.run(graph, run_args);
+        int res = (Integer) executor.run(graph, run_args);
+        System.err.println(res);
 
         try (var out = new PrintWriter("graph.dot")) {
             out.print("digraph {\n  compound=true\n  node [shape=rect]\n");
@@ -154,6 +153,7 @@ public class Program {
 
 
         resolveStack(blocks[0]);
+        var method = new MethodGraph(block_list, max_locals);
 
         // Init locals lists
         for (var blk : block_list) {
@@ -171,8 +171,6 @@ public class Program {
             }
         }
 
-        var method = new MethodGraph(block_list, max_locals);
-
         // SSAify locals.
         for (var blk : block_list) {
             var locals = blk.inputs.clone();
@@ -187,6 +185,14 @@ public class Program {
                     locals[l.index] = l.ops[0];
                     blk.insts.remove(i);
                     i--;
+                } else if (inst instanceof IInc l) {
+                    var delta = new Constant<Integer>(l.constant);
+                    blk.insts.set(i, delta);
+                    var add = new AddInteger();
+                    add.ops[0] = locals[l.index];
+                    add.ops[1] = delta;
+                    locals[l.index] = add;
+                    blk.insts.add(i+1, add);
                 }
             }
             for (var dest : blk.terminator.destinations) {
@@ -202,7 +208,9 @@ public class Program {
 
 
         // Clean up unnecessary phi nodes.
-        for (int iter = 0; iter < 10; iter++) {
+        // Needs to be iterated because this is not really all that
+        // correct, but works for now.
+        for (int iter = 0; iter < 5; iter++) {
             for (var blk : block_list) {
                 for (int i = 0; i < blk.insts.size(); i++) {
                     var inst = blk.insts.get(i);
@@ -574,6 +582,10 @@ abstract class Instruction {
         ops = new Instruction[argc];
         result_count = res_count;
     }
+
+    public String toString() {
+        return getClass().getName();
+    }
 }
 
 class Nop extends Instruction {
@@ -584,6 +596,10 @@ class Constant<T> extends Instruction {
     T val;
     Constant(T v) { super(0); val = v; }
     Constant(ConstantEntry<T> v) { super(0); val = v.val; }
+
+    public String toString() {
+        return "Constant " + val.toString();
+    }
 }
 
 class LoadLocal<T> extends Instruction {
@@ -803,10 +819,14 @@ class Phi extends Instruction {
     }
 
     Instruction allTheSame() {
-        var first = ops[0];
+        Instruction first = null;
         for (var o : ops) {
-            if (o != first)
-                return null;
+            if (o != this) {
+                if (first == null)
+                    first = o;
+                else if (o != first)
+                    return null;
+            }
         }
         return first;
     }
@@ -952,7 +972,6 @@ class ClassFile {
         int version = file.readInt();
 
         var constants = new ConstObject[file.readShort()];
-        System.err.println("#constants: " + (constants.length - 1));
         for (int i = 1; i < constants.length; i++)
             constants[i] = readConstant(file);
 
@@ -1172,7 +1191,7 @@ class MethodGraph {
             for (var inst : b.insts) {
                 content = content + " | ";
 
-                content += "i" + inst_ids.get(inst) + ": " + inst.getClass().getName();
+                content += "i" + inst_ids.get(inst) + ": " + inst.toString();
                 for (var op : inst.ops) {
                     content += " i" + inst_ids.get(op);
                 }
@@ -1180,7 +1199,7 @@ class MethodGraph {
             content += "} ";
 
             if (b.cycles != null) {
-                content += " | {cyc";
+                content += " | {#";
                 for (var c : b.cycles)
                     content += "|" + c;
                 content += "}";
@@ -1320,13 +1339,14 @@ class Executor {
                     case LoadArray i: result = ((Object[]) load(inst.ops[0]))[(Integer) load(inst.ops[1])]; break;
                     case StoreArray i: ((Object[]) load(inst.ops[0]))[(Integer) load(inst.ops[1])] = load(inst.ops[2]); break;
                     case ArrayLength i: result = ((Object[]) load(inst.ops[0])).length; break;
+                    case NewArray i: result = new Object[(Integer) load(inst.ops[0])]; break;
 
                     case Goto g: {
                         next = g.destinations[0];
                         incoming_direction = next.inputIndex(block);
+                        cycles[idx] += 1;
                         block = next;
                         end = 0;
-                        cost = 0;
                     } continue;
                     case If i: {
                         int cond = (Integer) load(i.condition());
@@ -1344,6 +1364,7 @@ class Executor {
                         else
                             next = i.on_false();
                         incoming_direction = next.inputIndex(block);
+                        cycles[idx] += 1;
                         block = next;
                         end = 0;
                     } continue;
@@ -1364,10 +1385,23 @@ class Executor {
                         else
                             next = i.on_false();
                         incoming_direction = next.inputIndex(block);
+                        cycles[idx] += 1;
+                        block = next;
+                        end = 0;
+                    } continue;
+                    case IfCheckNull i: {
+                        boolean is_null = load(i.condition()) == null;
+                        if (is_null == i.is_null)
+                            next = i.on_true();
+                        else
+                            next = i.on_false();
+                        incoming_direction = next.inputIndex(block);
+                        cycles[idx] += 1;
                         block = next;
                         end = 0;
                     } continue;
                     case Return r:
+                        cycles[idx] += 1;
                         return load(r.ops[0]);
                     default:
                         throw new Error("TODO: implement " + inst.getClass().getName());
